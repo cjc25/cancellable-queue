@@ -1,0 +1,5 @@
+# Required for the hermetic toolchain on bazel version 6.x, may be removable in
+# version 7.x
+build --incompatible_enable_cc_toolchain_resolution
+
+always --enable_bzlmod

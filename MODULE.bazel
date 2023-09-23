@@ -1,0 +1,19 @@
+"""cjc25-cancellable-queue provides queues with blocking and nonblocking APIs
+and cancellation"""
+module(name = "cjc25-cancellable-queue", version = "0.0")
+
+bazel_dep(name = "abseil-cpp", version = "20230802.0")
+bazel_dep(name = "google_benchmark", version = "1.8.2")
+bazel_dep(name = "googletest", version = "1.14.0")
+bazel_dep(name = "toolchains_llvm", version = "0.10.3")
+
+# Configure the LLVM toolchain.
+llvm = use_extension("@toolchains_llvm//toolchain/extensions:llvm.bzl", "llvm")
+llvm.toolchain(
+    llvm_version = "15.0.6",
+    cxx_standard = {"": "c++20"},
+)
+
+use_repo(llvm, "llvm_toolchain")
+
+register_toolchains("@llvm_toolchain//:all")
