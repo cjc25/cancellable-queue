@@ -22,10 +22,17 @@ constexpr size_t aligned_size(size_t size) {
 
 struct ThreadSafeQueue::Header {
   static constexpr int64_t kLive = 1 << 0;
+  static constexpr int64_t kReserved = 1 << 1;
 
   int64_t flags;
   size_t length;
   alignas(std::max_align_t) char data[];
+
+  bool live() const { return flags & kLive; }
+  void set_live() { flags |= kLive; }
+
+  bool empty() const { return flags == 0; }
+  void clear_flags() { flags = 0; }
 
   static size_t size(size_t data_length) {
     return aligned_size(sizeof(Header)) + aligned_size(data_length);
@@ -103,11 +110,15 @@ absl::Status ThreadSafeQueue::Enqueue(std::string_view content) {
   if (!header.ok()) {
     return header.status();
   }
-  **header = {.flags = Header::kLive, .length = content.length()};
-  content.copy((*header)->data, content.length());
-
+  **header = {.flags = Header::kReserved, .length = content.length()};
   back_ += size;
   space_available_ -= size;
+
+  mu_.Unlock();
+  content.copy((*header)->data, content.length());
+  mu_.Lock();
+  (*header)->set_live();
+
   return absl::OkStatus();
 }
 
@@ -137,7 +148,7 @@ ThreadSafeQueue::Entry::~Entry() {
   }
 
   absl::MutexLock l(&queue_->mu_);
-  header_->flags &= (~Header::kLive);
+  header_->clear_flags();
 
   if (offset_ != queue_->front_) {
     // Still waiting for an earlier entry to be cleaned up, so do nothing.
@@ -146,7 +157,7 @@ ThreadSafeQueue::Entry::~Entry() {
 
   // We have to clean up this entry and any no-longer-needed entries ahead of
   // us. The end of the queue looks like an all-0 entry
-  while ((header_->flags & Header::kLive) == 0 && header_->length > 0) {
+  while (header_->empty() && header_->length > 0) {
     offset_ += header_->size();
     queue_->space_available_ += header_->size();
     queue_->front_ += header_->size();
@@ -178,11 +189,14 @@ absl::StatusOr<ThreadSafeQueue::Entry> ThreadSafeQueue::Dequeue() {
     return absl::CancelledError();
   }
 
-  Entry e(this, next_dequeue_,
-          ring_.ObjectAtOffset<Header>(next_dequeue_).value());
+  auto header = ring_.ObjectAtOffset<Header>(next_dequeue_).value();
+  Entry e(this, next_dequeue_, header);
 
   next_dequeue_ += e.header_->size();
-  ABSL_CHECK_LE(next_dequeue_, back_) << "next_dequeue unexpectedly ahead of queue back";
+  ABSL_CHECK_LE(next_dequeue_, back_)
+      << "next_dequeue unexpectedly ahead of queue back";
+
+  mu_.Await(absl::Condition(header, &Header::live));
 
   return e;
 }
